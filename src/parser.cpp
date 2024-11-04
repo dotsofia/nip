@@ -87,18 +87,20 @@ std::unique_ptr<ParamDecl> Parser::parse_param_decl() {
 std::optional<Type> Parser::parse_type() {
     TokenKind kind = next_token.kind;
 
+    if (kind == TokenKind::KeywordNumber) {
+        advance(); // 'number'
+        return Type::Number();
+    }
+
     if (kind == TokenKind::KeywordVoid) {
         advance(); // eat 'void'
         return Type::Void();
     }
+
     if (kind == TokenKind::Identifier) {
         auto t = Type::Custom(*next_token.value);
         advance(); // eat identifier
         return t;
-    }
-    if (kind == TokenKind::Number) {
-        advance(); // 'number'
-        return Type::Number();
     }
 
     log_error(next_token.location, "expected type specifier");
@@ -117,7 +119,7 @@ std::unique_ptr<Block> Parser::parse_block() {
         if (next_token.kind == TokenKind::RBrace)
             break;
 
-        // If EOF or Function reached, most likely the block was not closed.
+        // If EOF or Function encountered, most likely the block was not closed.
         if (next_token.kind == TokenKind::_EOF || next_token.kind == TokenKind::KeywordFn)
             return log_error(next_token.location, "expected '}' at the end of a block");
 
@@ -269,8 +271,13 @@ std::optional<Parser::ParameterList> Parser::parse_parameter_list() {
     }
 
     for (;;) {
+        if (next_token.kind != TokenKind::Identifier) {
+            log_error(next_token.location, "expected paramater declaration");
+            return std::nullopt;
+        }
+
         auto param_decl = parse_param_decl();
-        if (!param_decl) 
+        if (!param_decl)
             return std::nullopt;
         argument_list.emplace_back(std::move(param_decl));
 

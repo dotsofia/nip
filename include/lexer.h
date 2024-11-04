@@ -21,6 +21,7 @@ enum class TokenKind : char {
     KeywordFn,
     KeywordVoid,
     KeywordReturn,
+    KeywordNumber,
 
     // Single character codes are represented by their ascii value.
     _EOF = single_char_tokens[0],
@@ -38,6 +39,7 @@ const std::unordered_map<std::string_view, TokenKind> keywords = {
     {"void", TokenKind::KeywordVoid},
     {"fn", TokenKind::KeywordFn},
     {"return", TokenKind::KeywordReturn},
+    {"number", TokenKind::KeywordNumber},
 };
 
 struct Token {

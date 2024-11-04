@@ -4,6 +4,7 @@
 
 #include "../include/lexer.h"
 #include "../include/parser.h"
+#include "../include/semantic.h"
 
 int main(int argc, const char **argv) {
     std::ifstream file(argv[1]);
@@ -18,6 +19,12 @@ int main(int argc, const char **argv) {
     auto [ast, success] = parser.parse_file();
 
     for (auto &&fn : ast)
+        fn->print();
+
+    Semantic sema(std::move(ast));
+    auto res = sema.decorate_ast();
+
+    for (auto &&fn : res)
         fn->print();
 
     return !success;
