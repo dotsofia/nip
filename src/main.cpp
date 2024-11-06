@@ -1,7 +1,10 @@
+#include <llvm/Support/raw_ostream.h>
+
 #include <fstream>
 #include <iostream>
 #include <sstream>
 
+#include "../include/irgen.h"
 #include "../include/lexer.h"
 #include "../include/parser.h"
 #include "../include/semantic.h"
@@ -27,5 +30,8 @@ int main(int argc, const char **argv) {
     for (auto &&fn : res)
         fn->print();
 
-    return !success;
+    IRGen irgen(std::move(res), argv[1]);
+    irgen.generate_ir()->print(llvm::errs(), nullptr);
+    
+    return 0;
 }

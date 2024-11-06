@@ -271,7 +271,7 @@ struct DecoratedDeclRefExpr : public DecoratedExpr {
 };
 
 struct DecoratedCallExpr : public DecoratedExpr {
-    const DecoratedFunctionDecl *callee;  
+    const DecoratedFunctionDecl *callee;
     std::vector<std::unique_ptr<DecoratedExpr>> arguments;
 
     DecoratedCallExpr(SourceLocation location,
