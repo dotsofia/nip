@@ -33,7 +33,38 @@ IRGen::allocate_stack_variable(llvm::Function *function,
     llvm::IRBuilder<> tmp(context);
     tmp.SetInsertPoint(alloca_insert_point);
 
-    return tmp.CreateAlloca(tmp.getDoubleTy());
+    return tmp.CreateAlloca(tmp.getDoubleTy(), nullptr, identifier);
+}
+
+void IRGen::generate_conditional_op(const DecoratedExpr &op,
+                                    llvm::BasicBlock *true_block,
+                                    llvm::BasicBlock *false_block) {
+    const auto *binop = dynamic_cast<const DecoratedBinaryOP *>(&op);
+
+    if (binop && binop->op == TokenKind::PipePipe) {
+        llvm::BasicBlock *next_block = 
+            llvm::BasicBlock::Create(context, "or.lhs.false", true_block->getParent());
+        generate_conditional_op(*binop->lhs, true_block, next_block);
+
+        builder.SetInsertPoint(next_block);
+        generate_conditional_op(*binop->rhs, true_block, false_block);
+        return;
+    }
+
+    if (binop && binop->op == TokenKind::AmpAmp) {
+        llvm::BasicBlock *next_block = 
+            llvm::BasicBlock::Create(context, "and.lhs.true", true_block->getParent());
+        generate_conditional_op(*binop->lhs, next_block, false_block);
+
+        builder.SetInsertPoint(next_block);
+        generate_conditional_op(*binop->rhs, true_block, false_block);
+        return;
+    }
+
+
+    llvm::Value *v = double_to_bool(generate_expr(op));
+    builder.CreateCondBr(v, true_block, false_block);
+    return;
 }
 
 llvm::Value *IRGen::generate_call_expr(const DecoratedCallExpr &call) {
@@ -46,6 +77,82 @@ llvm::Value *IRGen::generate_call_expr(const DecoratedCallExpr &call) {
     return builder.CreateCall(callee, args);
 }
 
+llvm::Value *IRGen::generate_unary_op(const DecoratedUnaryOP &unop) {
+    llvm::Value *rhs = generate_expr(*unop.operand);
+
+    if (unop.op == TokenKind::Minus)
+        return builder.CreateFNeg(rhs);
+    if (unop.op == TokenKind::NEQ)
+        return bool_to_double(builder.CreateNot(double_to_bool(rhs)));
+
+    llvm_unreachable("unknown unary op");
+    return nullptr;
+}
+
+llvm::Value *IRGen::generate_binary_op(const DecoratedBinaryOP &binop) {
+    TokenKind op = binop.op;
+
+    if (op == TokenKind::AmpAmp || op == TokenKind::PipePipe) {
+        llvm::Function *function = builder.GetInsertBlock()->getParent();
+        bool is_or = op == TokenKind::PipePipe;
+
+        auto *rhs_tag = is_or ? "or.rhs" : "and.rhs";
+        auto *merge_tag = is_or ? "or.merge" : "and.merge";
+
+        auto rhs = llvm::BasicBlock::Create(context, rhs_tag, function);
+        auto merge = llvm::BasicBlock::Create(context, merge_tag, function);
+
+        llvm::BasicBlock *false_block = is_or ? rhs : merge;
+        llvm::BasicBlock *true_block = is_or ? merge : rhs;
+        generate_conditional_op(*binop.lhs, true_block, false_block);
+
+
+        builder.SetInsertPoint(rhs);
+        llvm::Value *rhs_v = double_to_bool(generate_expr(*binop.rhs));
+        builder.CreateBr(merge);
+
+        rhs = builder.GetInsertBlock();
+        builder.SetInsertPoint(merge);
+        llvm::PHINode *phi = builder.CreatePHI(builder.getInt1Ty(), 2);
+
+        for (auto it = pred_begin(merge); it != pred_end(merge); ++it) {
+            if (*it == rhs)
+                phi->addIncoming(rhs_v, rhs);
+            else 
+                phi->addIncoming(builder.getInt1(is_or), *it);
+        }
+
+        return bool_to_double(phi);
+    }
+
+    llvm::Value *lhs = generate_expr(*binop.lhs);
+    llvm::Value *rhs = generate_expr(*binop.rhs);
+
+    if (op == TokenKind::Plus)
+        return builder.CreateFAdd(lhs, rhs);
+
+    if (op == TokenKind::Minus)
+        return builder.CreateFSub(lhs, rhs);
+
+    if (op == TokenKind::Star)
+        return builder.CreateFMul(lhs, rhs);
+
+    if (op == TokenKind::Slash)
+        return builder.CreateFDiv(lhs, rhs);
+
+    if (op == TokenKind::EqualEqual)
+        return bool_to_double(builder.CreateFCmpOEQ(lhs, rhs));
+
+    if (op == TokenKind::LT)
+        return bool_to_double(builder.CreateFCmpOLT(lhs, rhs));
+
+    if (op == TokenKind::GT)
+        return bool_to_double(builder.CreateFCmpOGT(lhs, rhs));
+
+    llvm_unreachable("unexpected binary operator");
+    return nullptr;
+}
+
 llvm::Value *IRGen::generate_expr(const DecoratedExpr &expr) {
     if (auto *number = dynamic_cast<const DecoratedNumberLiteral *>(&expr))
         return llvm::ConstantFP::get(builder.getDoubleTy(), number->value);
@@ -55,6 +162,15 @@ llvm::Value *IRGen::generate_expr(const DecoratedExpr &expr) {
 
     if (auto *call = dynamic_cast<const DecoratedCallExpr *>(&expr))
         return generate_call_expr(*call);
+
+    if (auto *unop = dynamic_cast<const DecoratedUnaryOP *>(&expr))
+        return generate_unary_op(*unop);
+
+    if (auto *binop = dynamic_cast<const DecoratedBinaryOP *>(&expr))
+        return generate_binary_op(*binop);
+
+    if (auto *grouping = dynamic_cast<const DecoratedGroupingExpr *>(&expr))
+        return generate_expr(*grouping->expr);
 
     llvm_unreachable("unexpected expression");
 }
@@ -186,4 +302,13 @@ llvm::Type *IRGen::generate_type(Type type) {
         return builder.getDoubleTy();
 
     return builder.getVoidTy();
+}
+
+llvm::Value *IRGen::double_to_bool(llvm::Value *v) {
+    return builder.CreateFCmpONE(
+        v, llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), "to.bool");
+}
+
+llvm::Value *IRGen::bool_to_double(llvm::Value *v) {
+    return builder.CreateUIToFP(v, builder.getDoubleTy(), "to.double");
 }

@@ -136,7 +136,7 @@ int main(int argc, char **argv) {
 
     // Compile the llvm ir using clang
     std::stringstream command;
-    command << "clang " << llvm_ir_path;
+    command << "clang-20 " << llvm_ir_path;
     if (!options.output.empty())
         command << " -o " << options.output;
 

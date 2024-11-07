@@ -5,14 +5,14 @@
 #include <optional>
 #include <vector>
 
-#include "ast.h" 
+#include "ast.h"
 
 class Semantic {
     std::vector<std::unique_ptr<FunctionDecl>> ast;
     std::vector<std::vector<DecoratedDecl *>> scopes;
 
     DecoratedFunctionDecl *current_function;
-    
+
     // Helper class for creating scopes
     class Scope {
         Semantic *sema;
@@ -34,13 +34,17 @@ class Semantic {
     std::unique_ptr<DecoratedExpr> decorate_expr(const Expr &expr);
 
     std::unique_ptr<DecoratedBlock> decorate_block(const Block &block);
-    
+
     std::unique_ptr<DecoratedStmt> decorate_stmt(const Stmt &stmt);
     std::unique_ptr<DecoratedReturnStmt> decorate_return_stmt(const ReturnStmt &rtst);
 
     std::unique_ptr<DecoratedParamDecl> decorate_param_decl(const ParamDecl &param);
     std::unique_ptr<DecoratedFunctionDecl>
     decorate_function_decl(const FunctionDecl &function);
+
+    std::unique_ptr<DecoratedUnaryOP> decorate_unary_op(const UnaryOP &unary);
+    std::unique_ptr<DecoratedBinaryOP> decorate_binary_op(const BinaryOP &binary);
+    std::unique_ptr<DecoratedGroupingExpr> decorate_grouping_expr(const GroupingExpr &gexpr);
 
 public:
     Semantic(std::vector<std::unique_ptr<FunctionDecl>> ast)

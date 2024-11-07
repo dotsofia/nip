@@ -26,18 +26,27 @@ class IRGen {
     llvm::AllocaInst *allocate_stack_variable(llvm::Function *function,
             const std::string_view identifier);
 
+    llvm::Value *double_to_bool(llvm::Value *v);
+    llvm::Value *bool_to_double(llvm::Value *v);
+
     void generate_block(const  DecoratedBlock &block);
     void generate_function_body(const DecoratedFunctionDecl &function_decl);
     void generate_function_decl(const DecoratedFunctionDecl &function_decl);
 
     void generate_builtin_display_body(const DecoratedFunctionDecl &function_decl);
     void generate_main_wrapper();
-    
+
+    void generate_conditional_op(const DecoratedExpr &op,
+            llvm::BasicBlock *true_block, llvm::BasicBlock *false_block);
+
     llvm::Value *generate_stmt(const DecoratedStmt &stmt);
     llvm::Value *generate_return_stmt(const DecoratedReturnStmt &stmt);
 
     llvm::Value *generate_expr(const DecoratedExpr &expr);
     llvm::Value *generate_call_expr(const DecoratedCallExpr &expr);
+
+    llvm::Value *generate_unary_op(const DecoratedUnaryOP &unop);
+    llvm::Value *generate_binary_op(const DecoratedBinaryOP &binop);
 
 public:
     explicit IRGen(

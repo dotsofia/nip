@@ -1,11 +1,39 @@
 #ifndef _NIP_AST_H
 #define _NIP_AST_H
-
+#include <cassert>
 #include <cstdio>
 #include <iostream>
 #include <memory>
 
+#include "lexer.h"
 #include "utility.h"
+
+static std::string_view dump_op(const TokenKind op) {
+    switch (op) {
+        case TokenKind::Plus:
+            return "+";
+        case TokenKind::Minus:
+            return "-";
+        case TokenKind::Star:
+            return "*";
+        case TokenKind::Slash:
+            return "/";
+        case TokenKind::EqualEqual:
+            return "==";
+        case TokenKind::AmpAmp:
+            return "&&";
+        case TokenKind::PipePipe:
+            return "||";
+        case TokenKind::LT:
+            return "<";
+        case TokenKind::GT:
+            return ">";
+        case TokenKind::NEQ:
+            return "!";
+        default:
+            assert(false && "unexpected operator");
+    }
+}
 
 struct Type {
     enum class Kind { Void, Number, Custom };
@@ -113,11 +141,66 @@ struct CallExpr : public Expr {
 
     void print(size_t level = 0) const override {
         std::cerr << indent(level) << "CallExpr:\n";
-        
+
         identifier->print(level + 1);
 
         for (auto &&arg : arguments)
             arg->print(level + 1);
+    }
+};
+
+struct BinaryOP : public Expr {
+    std::unique_ptr<Expr> lhs;
+    std::unique_ptr<Expr> rhs;
+    TokenKind op;
+
+    BinaryOP(SourceLocation location,
+             std::unique_ptr<Expr> lhs,
+             std::unique_ptr<Expr> rhs,
+             TokenKind op)
+        : Expr(location),
+          lhs(std::move(lhs)),
+          rhs(std::move(rhs)),
+          op(op) {}
+
+    void print(size_t level = 0) const override {
+        std::cerr << indent (level) <<"BinaryOP: '" << dump_op(op) << '\''
+                  << '\n';
+
+        lhs->print(level + 1);
+        rhs->print(level + 1);
+    }
+};
+
+struct UnaryOP : public Expr {
+    std::unique_ptr<Expr> operand;
+    TokenKind op;
+
+    UnaryOP(SourceLocation location,
+            std::unique_ptr<Expr> operand,
+            TokenKind op)
+        : Expr(location),
+          operand(std::move(operand)),
+          op(op) {}
+
+    void print(size_t level = 0) const override {
+        std::cerr << indent(level) << "UnaryOP: '" << dump_op(op) << '\''
+                  << '\n';
+
+        operand->print(level + 1);
+    }
+};
+
+struct GroupingExpr : public Expr {
+    std::unique_ptr<Expr> expr;
+
+    GroupingExpr(SourceLocation location, std::unique_ptr<Expr> expr)
+        : Expr(location), expr(std::move(expr)) {}
+
+    void print(size_t level = 0) const override {
+        std::cerr << indent(level) << "GroupingExpr:\n";
+
+        expr->print(level + 1);
     }
 };
 
@@ -129,7 +212,7 @@ struct ParamDecl : public Decl {
           type(std::move(type)) {}
 
     void print(size_t level = 0) const override {
-        std::cerr << indent(level) << "ParamDecl: " << identifier << ":" << type.name 
+        std::cerr << indent(level) << "ParamDecl: " << identifier << ":" << type.name
                   << '\n';
     }
 };
@@ -152,8 +235,8 @@ struct FunctionDecl : public Decl {
     void print(size_t level = 0) const override {
         std::cerr << indent(level) << "Function Declaration: " << identifier << ":"
              << type.name << '\n';
-        
-        for (auto &&p : params) 
+
+        for (auto &&p : params)
             p->print(level + 1);
 
         body->print(level + 1);
@@ -172,7 +255,7 @@ struct DecoratedStmt : public Printable {
 struct DecoratedExpr : public DecoratedStmt {
     Type type;
 
-    DecoratedExpr(SourceLocation location, Type type) 
+    DecoratedExpr(SourceLocation location, Type type)
         : DecoratedStmt(location),
           type(type) {}
 };
@@ -219,7 +302,7 @@ struct DecoratedDecl : public Printable {
         : location(location),
           identifier(std::move(identifier)),
           type(type) {}
-    
+
     virtual ~DecoratedDecl() = default;
 };
 
@@ -250,7 +333,7 @@ struct DecoratedFunctionDecl : public DecoratedDecl {
         std::cerr << indent(level) << "DecoratedFunctionDecl: @(" << this << ") "
                   << identifier << ':' << '\n';
 
-        for (auto &&param : params) 
+        for (auto &&param : params)
             param->print(level + 1);
 
         body->print(level + 1);
@@ -306,5 +389,60 @@ struct DecoratedReturnStmt : public DecoratedStmt {
     }
 };
 
+struct DecoratedBinaryOP : public DecoratedExpr {
+    std::unique_ptr<DecoratedExpr> lhs;
+    std::unique_ptr<DecoratedExpr> rhs;
+    TokenKind op;
 
-#endif 
+    DecoratedBinaryOP(SourceLocation location,
+             std::unique_ptr<DecoratedExpr> lhs,
+             std::unique_ptr<DecoratedExpr> rhs,
+             TokenKind op)
+        : DecoratedExpr(location, lhs->type),
+          lhs(std::move(lhs)),
+          rhs(std::move(rhs)),
+          op(op) {}
+
+    void print(size_t level = 0) const override {
+        std::cerr << indent(level) << "DecoratedBinaryOP: '" << dump_op(op) << '\''
+                  << '\n';
+
+        lhs->print(level + 1);
+        rhs->print(level + 1);
+    }
+};
+
+struct DecoratedUnaryOP : public DecoratedExpr {
+    std::unique_ptr<DecoratedExpr> operand;
+    TokenKind op;
+
+    DecoratedUnaryOP(SourceLocation location,
+            std::unique_ptr<DecoratedExpr> operand,
+            TokenKind op)
+        : DecoratedExpr(location, operand->type),
+          operand(std::move(operand)),
+          op(op) {}
+
+    void print(size_t level = 0) const override {
+        std::cerr << indent(level) << "DecoratedUnaryOP: '" << dump_op(op) << '\''
+                  << '\n';
+
+        operand->print(level + 1);
+    }
+};
+
+struct DecoratedGroupingExpr : public DecoratedExpr {
+    std::unique_ptr<DecoratedExpr> expr;
+
+    DecoratedGroupingExpr(SourceLocation location, std::unique_ptr<DecoratedExpr> expr)
+        : DecoratedExpr(location, expr->type),
+          expr(std::move(expr)) {}
+
+    void print(size_t level = 0) const override {
+        std::cerr << indent(level) << "DecoratedGroupingExpr:\n";
+
+        expr->print(level + 1);
+    }
+};
+
+#endif

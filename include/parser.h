@@ -37,6 +37,9 @@ class Parser {
     std::unique_ptr<Expr> parse_expr();
     std::unique_ptr<Expr> parse_primary();
 
+    std::unique_ptr<Expr> parse_expr_RHS(std::unique_ptr<Expr> lhs, int precedence);
+    std::unique_ptr<Expr> parse_prefix_expr();
+
     // Helpers
     typedef std::vector<std::unique_ptr<Expr>> ArgumentList;
     std::optional<ArgumentList> parse_argument_list();

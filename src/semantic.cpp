@@ -130,6 +130,45 @@ Semantic::decorate_call_expr(const CallExpr &call) {
             call.location, *decorated_function_decl, std::move(decorated_args));
 }
 
+std::unique_ptr<DecoratedUnaryOP>
+Semantic::decorate_unary_op(const UnaryOP &unary) {
+    store_result(decorated_rhs, decorate_expr(*unary.operand));
+
+    if (decorated_rhs->type.kind == Type::Kind::Void)
+        return log_error(
+                decorated_rhs->location,
+                "void expression cannot be used as operand for unary operator");
+
+    return std::make_unique<DecoratedUnaryOP>(unary.location, std::move(decorated_rhs),
+                                              unary.op);
+}
+
+std::unique_ptr<DecoratedBinaryOP>
+Semantic::decorate_binary_op(const BinaryOP &binary) {
+    store_result(decorated_lhs, decorate_expr(*binary.lhs));
+    store_result(decorated_rhs, decorate_expr(*binary.rhs));
+
+    if (decorated_lhs->type.kind == Type::Kind::Void)
+        return log_error(
+                decorated_lhs->location,
+                "void expression cannot be used as LHS for binary operator");
+    if (decorated_rhs->type.kind == Type::Kind::Void)
+        return log_error(
+                decorated_lhs->location,
+                "void expression cannot be used as RHS for binary operator");
+
+    // TODO: Remember to check the type compatibility when other types are implemented
+    return std::make_unique<DecoratedBinaryOP>(
+        binary.location, std::move(decorated_lhs), std::move(decorated_rhs), binary.op);
+}
+
+std::unique_ptr<DecoratedGroupingExpr>
+Semantic::decorate_grouping_expr(const GroupingExpr &gexpr) {
+    store_result(decorated_expr, decorate_expr(*gexpr.expr));
+    return std::make_unique<DecoratedGroupingExpr>(gexpr.location,
+                                                   std::move(decorated_expr));
+}
+
 std::unique_ptr<DecoratedExpr> Semantic::decorate_expr(const Expr &expr) {
     if (const auto *number = dynamic_cast<const NumberLiteral*>(&expr))
         return std::make_unique<DecoratedNumberLiteral>(number->location,
@@ -141,6 +180,15 @@ std::unique_ptr<DecoratedExpr> Semantic::decorate_expr(const Expr &expr) {
     if (const auto *call_expr = dynamic_cast<const CallExpr*>(&expr))
         return decorate_call_expr(*call_expr);
 
+    if (const auto *unary_op = dynamic_cast<const UnaryOP*>(&expr))
+        return decorate_unary_op(*unary_op);
+
+    if (const auto *binary_op = dynamic_cast<const BinaryOP*>(&expr))
+        return decorate_binary_op(*binary_op);
+
+    if (const auto *gexpr = dynamic_cast<const GroupingExpr*>(&expr))
+        return decorate_grouping_expr(*gexpr);
+
     assert(false && "unexpected expression");
     return nullptr;
 }
@@ -148,7 +196,7 @@ std::unique_ptr<DecoratedExpr> Semantic::decorate_expr(const Expr &expr) {
 std::unique_ptr<DecoratedReturnStmt>
 Semantic::decorate_return_stmt(const ReturnStmt &rstmt) {
     // Tried returning expression on void function
-    if (current_function->type.kind == Type::Kind::Void && rstmt.expr) 
+    if (current_function->type.kind == Type::Kind::Void && rstmt.expr)
         return log_error(rstmt.location, "unexpected return type from void function");
     // Non-void function without a return expr
     if (current_function->type.kind != Type::Kind::Void && !rstmt.expr) {

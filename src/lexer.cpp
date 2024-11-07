@@ -22,12 +22,15 @@ Token Lexer::get_next_token() {
 
     // Handle single character tokens.
     for (auto &&c : single_char_tokens) {
-        if (c == current) 
+        if (c == current)
            return Token{location, static_cast<TokenKind>(c)};
     }
 
     // Skips comments.
-    if (current == '/' && peek() == '/') {
+    if (current == '/') {
+        if (peek() != '/')
+            return Token{location, TokenKind::Slash};
+
         char c = advance();
         // A comments goes until the end of the line.
         while (c != '\n' && c != '\0') c = advance();
@@ -35,13 +38,28 @@ Token Lexer::get_next_token() {
         return get_next_token();
     }
 
+    if (current == '=' && peek() == '=') {
+        advance();
+        return Token{location, TokenKind::EqualEqual};
+    }
+
+    if (current == '&' && peek() == '&') {
+        advance();
+        return Token{location, TokenKind::AmpAmp};
+    }
+
+    if (current == '|' && peek() == '|') {
+        advance();
+        return Token{location, TokenKind::PipePipe};
+    }
+
     // Identifiers: [a-zA-Z][a-zA-Z0-9]*
     if (is_alpha(current)) {
         std::string name{current};
 
-        while (is_alpha(peek()) || is_digit(peek())) 
+        while (is_alpha(peek()) || is_digit(peek()))
             name += advance();
-        
+
         // Check if identifier is a keyword
         if (keywords.count(name))
             return Token{location, keywords.at(name), std::move(name)};

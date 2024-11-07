@@ -1,6 +1,28 @@
 #include "../include/parser.h"
 #include "../include/utility.h"
 
+int get_tok_precedence(TokenKind tok) {
+    switch (tok) {
+        case TokenKind::Star:
+        case TokenKind::Slash:
+            return 6;
+        case TokenKind::Plus:
+        case TokenKind::Minus:
+            return 5;
+        case TokenKind::LT:
+        case TokenKind::GT:
+            return 4;
+        case TokenKind::EqualEqual:
+            return 3;
+        case TokenKind::AmpAmp:
+            return 2;
+        case TokenKind::PipePipe:
+            return 1;
+        default:
+            return -1;
+    }
+}
+
 // Synchronize on:
 // - start of function
 // - end of current block
@@ -141,8 +163,8 @@ std::unique_ptr<Block> Parser::parse_block() {
 //   ::= 'return' <expr>? ';'
 std::unique_ptr<ReturnStmt> Parser::parse_return_stmt() {
     SourceLocation location = next_token.location;
-    advance(); // eat 'return' 
-    
+    advance(); // eat 'return'
+
     std::unique_ptr<Expr> expr;
     // If theres is not a ';' then there should be an expression.
     if (next_token.kind != TokenKind::SemiColon) {
@@ -154,7 +176,7 @@ std::unique_ptr<ReturnStmt> Parser::parse_return_stmt() {
 
     match(TokenKind::SemiColon, "expected ';' at the end of a return statement");
     advance(); // eat ';'
-    
+
     return std::make_unique<ReturnStmt>(location, std::move(expr));
 }
 
@@ -167,21 +189,62 @@ std::unique_ptr<Stmt> Parser::parse_stmt() {
 
     store_result(expr, parse_expr());
 
-    match(TokenKind::SemiColon, "expected ';' at the end of expression");
+    match(TokenKind::SemiColon, "expected ';' at the end of statement");
     advance(); // eat ';'
-    
+
     return expr;
 }
 
+std::unique_ptr<Expr> Parser::parse_expr_RHS(std::unique_ptr<Expr> lhs,
+                                             int precedence) {
+    while (true) {
+        TokenKind op = next_token.kind;
+        int current_precedence = get_tok_precedence(op);
+
+        if (current_precedence < precedence)
+            return lhs;
+        advance(); // eat operator
+
+        store_result(rhs, parse_prefix_expr());
+
+        if (current_precedence < get_tok_precedence(next_token.kind)) {
+            // We add 1 to the precedence to indicate left-associativity
+            rhs = parse_expr_RHS(std::move(rhs), precedence + 1);
+            if (!rhs) {
+                return nullptr;
+            }
+        }
+
+        lhs = std::make_unique<BinaryOP>(lhs->location, std::move(lhs),
+                                          std::move(rhs), op);
+    }
+}
+
+// <prefixExpression>
+//  ::= ('!' | '-')* <primaryExpr>
+std::unique_ptr<Expr> Parser::parse_prefix_expr() {
+    Token tok = next_token;
+
+    if (tok.kind != TokenKind::Minus && tok.kind != TokenKind::NEQ)
+        return parse_primary();
+    advance(); // eat '-' or '!'
+
+    store_result(rhs, parse_prefix_expr());
+
+    return std::make_unique<UnaryOP>(tok.location, std::move(rhs),
+                                           tok.kind);
+}
+
 std::unique_ptr<Expr> Parser::parse_expr() {
-    return parse_primary();
+    store_result(lhs, parse_prefix_expr());
+    return parse_expr_RHS(std::move(lhs), 0);
 }
 
 // <primary_expression>
 //   ::= <number_literal>
 //   |   <decl_ref_expr>
 //   |   <call_expr>
-//
+//   |   '(' <expr> ')'
 // <number_literal>
 //   ::= <number>
 //
@@ -193,11 +256,23 @@ std::unique_ptr<Expr> Parser::parse_expr() {
 std::unique_ptr<Expr> Parser::parse_primary() {
     SourceLocation location = next_token.location;
 
+    if (next_token.kind == TokenKind::LParen) {
+        advance(); // eat '('
+
+        store_result(expr, parse_expr());
+
+        match(TokenKind::RParen, "expected ')'");
+        advance(); // eat ')'
+
+        return std::make_unique<GroupingExpr>(location, std::move(expr));
+    }
+
     if (next_token.kind == TokenKind::Number) {
         auto num = std::make_unique<NumberLiteral>(location, *next_token.value);
         advance(); // eat number
         return num;
     }
+
     if (next_token.kind == TokenKind::Identifier) {
         auto decl_ref = std::make_unique<DeclRefExpr>(location, *next_token.value);
         advance(); // eat identifier
