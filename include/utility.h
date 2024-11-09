@@ -3,6 +3,7 @@
 
 #include <string>
 #include <string_view>
+#include <optional>
 
 // Declare variable with the return if error does not occur on parsing.
 #define store_result(var, init)    \
@@ -38,4 +39,15 @@ struct SourceFile {
 
 std::nullptr_t log_error(SourceLocation location, std::string_view message,
                       bool is_warning = false);
+
+template <typename B, typename T> class ConstValueContainer {
+    std::optional<T> value = std::nullopt;
+
+    ConstValueContainer() = default;
+    friend B;
+public:
+    void set_value(std::optional<T> v) { value = std::move(v); }
+    std::optional<T> get_value() const { return value; }
+};
+
 #endif

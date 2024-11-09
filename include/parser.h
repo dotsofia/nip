@@ -28,9 +28,16 @@ class Parser {
     // Methods to parse the AST
     std::unique_ptr<FunctionDecl> parse_function_decl();
     std::unique_ptr<ParamDecl> parse_param_decl();
+    std::unique_ptr<VarDecl> parse_var_decl(bool is_mutable);
 
     std::unique_ptr<Stmt> parse_stmt();
+    std::unique_ptr<Stmt> parse_assignment_or_expr();
+    std::unique_ptr<Assignment> parse_assignment_rhs(std::unique_ptr<DeclRefExpr> lhs);
+
     std::unique_ptr<ReturnStmt> parse_return_stmt();
+    std::unique_ptr<IfStmt> parse_if_stmt();
+    std::unique_ptr<WhileStmt> parse_while_stmt();
+    std::unique_ptr<DeclStmt> parse_decl_stmt();
 
     std::unique_ptr<Block> parse_block();
 

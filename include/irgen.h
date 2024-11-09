@@ -25,6 +25,7 @@ class IRGen {
     llvm::Type *generate_type(Type type);
     llvm::AllocaInst *allocate_stack_variable(llvm::Function *function,
             const std::string_view identifier);
+    llvm::Function *get_function();
 
     llvm::Value *double_to_bool(llvm::Value *v);
     llvm::Value *bool_to_double(llvm::Value *v);
@@ -41,6 +42,11 @@ class IRGen {
 
     llvm::Value *generate_stmt(const DecoratedStmt &stmt);
     llvm::Value *generate_return_stmt(const DecoratedReturnStmt &stmt);
+    llvm::Value *generate_decl_stmt(const DecoratedDeclStmt &stmt);
+
+    llvm::Value *generate_if_stmt(const DecoratedIfStmt &stmt);
+    llvm::Value *generate_while_stmt(const DecoratedWhileStmt &stmt);
+    llvm::Value *generate_assignment(const DecoratedAssignment &stmt);
 
     llvm::Value *generate_expr(const DecoratedExpr &expr);
     llvm::Value *generate_call_expr(const DecoratedCallExpr &expr);
