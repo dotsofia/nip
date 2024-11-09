@@ -9,27 +9,31 @@ IRGen::IRGen(
     std::vector<std::unique_ptr<DecoratedFunctionDecl>> dast,
     std::string_view src_path)
     : dast(std::move(dast)), builder(context),
-      module(std::make_unique<llvm::Module>("<trans_unit>", context)) {
-  module->setSourceFileName(src_path);
-  module->setTargetTriple(llvm::sys::getDefaultTargetTriple());
+    module(std::make_unique<llvm::Module>("<trans_unit>", context)) {
+    module->setSourceFileName(src_path);
+    module->setTargetTriple(llvm::sys::getDefaultTargetTriple());
 }
+
+llvm::Function *IRGen::get_function() {
+    return builder.GetInsertBlock()->getParent();
+};
 
 void IRGen::generate_function_decl(const DecoratedFunctionDecl &function_decl) {
     auto *ret_type = generate_type(function_decl.type);
 
     std::vector<llvm::Type *> param_types;
     for (auto &&param : function_decl.params)
-        param_types.emplace_back(generate_type(param->type));
+    param_types.emplace_back(generate_type(param->type));
 
     auto type = llvm::FunctionType::get(ret_type, param_types, false);
 
     llvm::Function::Create(type, llvm::Function::ExternalLinkage,
-            function_decl.identifier, *module);
+                           function_decl.identifier, *module);
 }
 
 llvm::AllocaInst *
 IRGen::allocate_stack_variable(llvm::Function *function,
-        const std::string_view identifier) {
+                               const std::string_view identifier) {
     llvm::IRBuilder<> tmp(context);
     tmp.SetInsertPoint(alloca_insert_point);
 
@@ -72,7 +76,7 @@ llvm::Value *IRGen::generate_call_expr(const DecoratedCallExpr &call) {
 
     std::vector<llvm::Value *> args;
     for (auto &&arg : call.arguments)
-        args.emplace_back(generate_expr(*arg));
+    args.emplace_back(generate_expr(*arg));
 
     return builder.CreateCall(callee, args);
 }
@@ -93,7 +97,7 @@ llvm::Value *IRGen::generate_binary_op(const DecoratedBinaryOP &binop) {
     TokenKind op = binop.op;
 
     if (op == TokenKind::AmpAmp || op == TokenKind::PipePipe) {
-        llvm::Function *function = builder.GetInsertBlock()->getParent();
+        llvm::Function *function = get_function();
         bool is_or = op == TokenKind::PipePipe;
 
         auto *rhs_tag = is_or ? "or.rhs" : "and.rhs";
@@ -154,6 +158,9 @@ llvm::Value *IRGen::generate_binary_op(const DecoratedBinaryOP &binop) {
 }
 
 llvm::Value *IRGen::generate_expr(const DecoratedExpr &expr) {
+    if (auto val = expr.get_value())
+        return llvm::ConstantFP::get(builder.getDoubleTy(), *val);
+
     if (auto *number = dynamic_cast<const DecoratedNumberLiteral *>(&expr))
         return llvm::ConstantFP::get(builder.getDoubleTy(), number->value);
 
@@ -176,10 +183,75 @@ llvm::Value *IRGen::generate_expr(const DecoratedExpr &expr) {
 }
 
 llvm::Value *IRGen::generate_return_stmt(const DecoratedReturnStmt &stmt) {
-  if (stmt.expr)
-    builder.CreateStore(generate_expr(*stmt.expr), ret_val);
+    if (stmt.expr)
+        builder.CreateStore(generate_expr(*stmt.expr), ret_val);
 
-  return builder.CreateBr(ret_block);
+    return builder.CreateBr(ret_block);
+}
+
+llvm::Value *IRGen::generate_if_stmt(const DecoratedIfStmt &stmt) {
+    llvm::Function *function = get_function();
+
+    auto *true_block = llvm::BasicBlock::Create(context, "if.true");
+    auto *exit_block = llvm::BasicBlock::Create(context, "if.exit");
+
+    llvm::BasicBlock *else_block = exit_block;
+    if (stmt.false_block)
+        else_block = llvm::BasicBlock::Create(context, "if.false");
+
+    llvm::Value *condition = generate_expr(*stmt.condition);
+    builder.CreateCondBr(double_to_bool(condition), true_block, else_block);
+
+    true_block->insertInto(function);
+    builder.SetInsertPoint(true_block);
+    generate_block(*stmt.true_block);
+    builder.CreateBr(exit_block);
+
+    if (stmt.false_block) {
+        else_block->insertInto(function);
+
+        builder.SetInsertPoint(else_block);
+        generate_block(*stmt.false_block);
+        builder.CreateBr(exit_block);
+    }
+
+    exit_block->insertInto(function);
+    builder.SetInsertPoint(exit_block);
+    return nullptr;
+}
+
+llvm::Value *IRGen::generate_while_stmt(const DecoratedWhileStmt &stmt) {
+    llvm::Function *function = get_function();
+
+    auto *header = llvm::BasicBlock::Create(context, "while.header", function);
+    auto *body = llvm::BasicBlock::Create(context, "while.body", function);
+    auto *exit = llvm::BasicBlock::Create(context, "while.exit", function);
+
+    builder.CreateBr(header);
+
+    builder.SetInsertPoint(header);
+    llvm::Value *cond = generate_expr(*stmt.condition);
+    builder.CreateCondBr(double_to_bool(cond), body, exit);
+
+    builder.SetInsertPoint(body);
+    generate_block(*stmt.body);
+    builder.CreateBr(header);
+
+    builder.SetInsertPoint(exit);
+    return nullptr;
+}
+
+llvm::Value *IRGen::generate_decl_stmt(const DecoratedDeclStmt &stmt) {
+    llvm::Function *function = get_function();
+    const auto *decl = stmt.var_decl.get();
+
+    llvm::AllocaInst *var = allocate_stack_variable(function, decl->identifier);
+
+    if (const auto &init = decl->init)
+        builder.CreateStore(generate_expr(*init), var);
+
+    declarations[decl] = var;
+    return nullptr;
 }
 
 llvm::Value *IRGen::generate_stmt(const DecoratedStmt &stmt) {
@@ -189,8 +261,25 @@ llvm::Value *IRGen::generate_stmt(const DecoratedStmt &stmt) {
     if (auto *rstmt = dynamic_cast<const DecoratedReturnStmt *>(&stmt))
         return generate_return_stmt(*rstmt);
 
+    if (auto *if_stmt = dynamic_cast<const DecoratedIfStmt *>(&stmt))
+        return generate_if_stmt(*if_stmt);
+
+    if (auto *while_stmt = dynamic_cast<const DecoratedWhileStmt *>(&stmt))
+        return generate_while_stmt(*while_stmt);
+
+    if (auto *decl_stmt = dynamic_cast<const DecoratedDeclStmt *>(&stmt))
+        return generate_decl_stmt(*decl_stmt);
+
+    if (auto *assignment = dynamic_cast<const DecoratedAssignment *>(&stmt))
+        return generate_assignment(*assignment);
+
     llvm_unreachable("unknown statement");
     return nullptr;
+}
+
+llvm::Value *IRGen::generate_assignment(const DecoratedAssignment &stmt) {
+    return builder.CreateStore(generate_expr(*stmt.expr),
+                               declarations[stmt.variable->decl]);
 }
 
 void IRGen::generate_block(const DecoratedBlock &block) {
@@ -213,7 +302,7 @@ void IRGen::generate_function_body(const DecoratedFunctionDecl &function_decl) {
 
     llvm::Value *undef = llvm::UndefValue::get(builder.getInt32Ty());
     alloca_insert_point = new llvm::BitCastInst(undef, undef->getType(),
-            "alloca.placeholder", entry);
+                                                "alloca.placeholder", entry);
 
     bool is_void = function_decl.type.kind == Type::Kind::Void;
     if (!is_void)
@@ -257,25 +346,25 @@ void IRGen::generate_function_body(const DecoratedFunctionDecl &function_decl) {
 
 void IRGen::generate_builtin_display_body(const DecoratedFunctionDecl &display) {
     auto *type = llvm::FunctionType::get(builder.getInt32Ty(),
-					 {llvm::PointerType::getUnqual(builder.getInt8Ty())}, true);
+                                         {llvm::PointerType::getUnqual(builder.getInt8Ty())}, true);
 
     auto *printf = llvm::Function::Create(type, llvm::Function::ExternalLinkage,
-            "printf", *module);
+                                          "printf", *module);
 
     auto *format = builder.CreateGlobalString("%.15g\n");
 
     llvm::Value *param = builder.CreateLoad(
-            builder.getDoubleTy(), declarations[display.params[0].get()]);
+        builder.getDoubleTy(), declarations[display.params[0].get()]);
 
     builder.CreateCall(printf, {format, param});
 }
 
 std::unique_ptr<llvm::Module> IRGen::generate_ir() {
     for (auto &&function : dast)
-        generate_function_decl(*function);
+    generate_function_decl(*function);
 
     for (auto &&function : dast)
-        generate_function_body(*function);
+    generate_function_body(*function);
 
     generate_main_wrapper();
 
@@ -287,8 +376,8 @@ void IRGen::generate_main_wrapper() {
     builtin_main->setName("__builtin_main__");
 
     auto *main = llvm::Function::Create(
-            llvm::FunctionType::get(builder.getInt32Ty(), {}, false),
-            llvm::Function::ExternalLinkage, "main", *module);
+        llvm::FunctionType::get(builder.getInt32Ty(), {}, false),
+        llvm::Function::ExternalLinkage, "main", *module);
 
     auto *entry = llvm::BasicBlock::Create(context, "entry", main);
     builder.SetInsertPoint(entry);

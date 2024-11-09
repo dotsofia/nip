@@ -1,14 +1,18 @@
 #include <cassert>
+#include <map>
 
 #include "../include/semantic.h"
+#include "../include/cfg.h"
 
 std::pair<DecoratedDecl *, int> Semantic::search_decl(const std::string id) {
     int idx = 0;
     for (auto it = scopes.rbegin(); it != scopes.rend(); it++) {
         // Search for every declaration in the current scope
         for (auto &&decl : *it) {
-            if (decl->identifier == id)
-                return {decl, idx};
+            if (decl->identifier != id)
+                continue;
+
+            return {decl, idx};
         }
         ++idx;
     }
@@ -122,6 +126,8 @@ Semantic::decorate_call_expr(const CallExpr &call) {
         if (decorated_arg->type.kind != decorated_function_decl->params[idx]->type.kind)
             return log_error(decorated_arg->location, "argument type does not match function paramater type");
 
+        decorated_arg->set_value(cee.evaluate(*decorated_arg, false));
+
         idx++;
         decorated_args.emplace_back(std::move(decorated_arg));
     }
@@ -193,6 +199,113 @@ std::unique_ptr<DecoratedExpr> Semantic::decorate_expr(const Expr &expr) {
     return nullptr;
 }
 
+std::unique_ptr<DecoratedAssignment>
+Semantic::decorate_assignment(const Assignment &assignment) {
+    store_result(decorated_lhs, decorate_decl_ref_expr(*assignment.variable));
+    store_result(decorated_rhs, decorate_expr(*assignment.expr));
+
+    if (dynamic_cast<const DecoratedParamDecl *>(decorated_lhs->decl))
+        return log_error(decorated_lhs->location,
+                         "parameters are immutable and cannot be assigned");
+
+    auto *var = dynamic_cast<const DecoratedVarDecl *>(decorated_lhs->decl);
+
+    if (decorated_rhs->type.kind != decorated_lhs->type.kind)
+        log_error(decorated_rhs->location,
+                  "assigned value does not match variable type");
+
+    decorated_rhs->set_value(cee.evaluate(*decorated_rhs, false));
+
+    return std::make_unique<DecoratedAssignment>(
+        assignment.location, std::move(decorated_lhs), std::move(decorated_rhs));
+}
+
+bool Semantic::check_variable_initialization(const DecoratedFunctionDecl &fn,
+                                             const CFG &cfg) {
+
+    enum class State { Bottom, Unassigned, Assigned, Top };
+
+    using Lattice = std::map<const DecoratedVarDecl *, State>;
+
+    auto join_states = [](State s1, State s2) {
+        if (s1 == s2)
+            return s1;
+
+        if (s1 == State::Bottom)
+            return s2;
+
+        if (s2 == State::Bottom)
+            return s1;
+
+        return State::Top;
+    };
+
+    std::vector<Lattice> cur_lattices(cfg.basic_blocks.size());
+    std::vector<std::pair<SourceLocation, std::string>> errors;
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        errors.clear();
+
+        for (int block = cfg.entry; block != cfg.exit; --block) {
+            const auto &[preds, succs, stmts] = cfg.basic_blocks[block];
+
+            Lattice tmp;
+            for (auto &&pred : preds)
+                for (auto &&[decl, state] : cur_lattices[pred.first])
+                    tmp[decl] = join_states(tmp[decl], state);
+
+            for (auto it = stmts.rbegin(); it != stmts.rend(); ++it) {
+                const DecoratedStmt *stmt = *it;
+
+                if (auto *decl = dynamic_cast<const DecoratedDeclStmt *>(stmt)) {
+                    tmp[decl->var_decl.get()] =
+                        decl->var_decl->init ? State::Assigned : State::Unassigned;
+                    continue;
+                }
+
+                if (auto *assignment = dynamic_cast<const DecoratedAssignment *>(stmt)) {
+                    const auto *var =
+                        dynamic_cast<const DecoratedVarDecl *>(assignment->variable->decl);
+
+                    assert(var &&
+                           "assignment to non-variables should have been caught by sema");
+
+                    if (!var->is_mutable && tmp[var] != State::Unassigned) {
+                        std::string msg = '\'' + var->identifier + "' cannot be mutated";
+                        errors.emplace_back(assignment->location, std::move(msg));
+                    }
+
+                    tmp[var] = State::Assigned;
+                    continue;
+                }
+
+                if (const auto *dre = dynamic_cast<const DecoratedDeclRefExpr *>(stmt)) {
+                    const auto *var = dynamic_cast<const DecoratedVarDecl *>(dre->decl);
+
+                    if (var && tmp[var] != State::Assigned) {
+                        std::string msg = '\'' + var->identifier + "' is not initialized";
+                        errors.emplace_back(dre->location, std::move(msg));
+                    }
+
+                    continue;
+                }
+            }
+
+            if (cur_lattices[block] != tmp) {
+                cur_lattices[block] = tmp;
+                changed = true;
+            }
+        }
+    }
+
+    for (auto &&[loc, msg] : errors)
+        log_error(loc, msg);
+
+    return !errors.empty();
+}
+
 std::unique_ptr<DecoratedReturnStmt>
 Semantic::decorate_return_stmt(const ReturnStmt &rstmt) {
     // Tried returning expression on void function
@@ -209,13 +322,72 @@ Semantic::decorate_return_stmt(const ReturnStmt &rstmt) {
         if (!decorated_expr)
             return nullptr;
 
-        if (current_function->type.kind != decorated_expr->type.kind) {
+        if (current_function->type.kind != decorated_expr->type.kind) 
             log_error(decorated_expr->location, "invalid return type");
-        }
+
+        decorated_expr->set_value(cee.evaluate(*decorated_expr, false));
     }
 
     return std::make_unique<DecoratedReturnStmt>(rstmt.location,
-						 std::move(decorated_expr));
+	    std::move(decorated_expr));
+}
+
+std::unique_ptr<DecoratedWhileStmt>
+Semantic::decorate_while_stmt(const WhileStmt &while_stmt) {
+    store_result(condition, decorate_expr(*while_stmt.condition));
+
+    if (condition->type.kind != Type::Kind::Number)
+        log_error(condition->location, "expected number in condition");
+
+    store_result(body, decorate_block(*while_stmt.body));
+
+    condition->set_value(cee.evaluate(*condition, false));
+
+    return std::make_unique<DecoratedWhileStmt>(
+        while_stmt.location, std::move(condition), std::move(body));
+}
+
+std::unique_ptr<DecoratedVarDecl>
+Semantic::decorate_var_decl(const VarDecl &var_decl) {
+    if (!var_decl.type && !var_decl.init)
+        return log_error(
+            var_decl.location, "missing type specifier for uninitialized variable");
+
+    std::unique_ptr<DecoratedExpr> decorated_initializer;
+    if (var_decl.init) {
+        decorated_initializer = decorate_expr(*var_decl.init);
+        if (!decorated_initializer)
+            return nullptr;
+    }
+
+    Type res_type = var_decl.type.value_or(decorated_initializer->type);
+    std::optional<Type> type = resolve_type(res_type);
+
+    if (!type || type->kind == Type::Kind::Void)
+        return log_error(var_decl.location, "variable '" + var_decl.identifier + 
+                         "' has invalid '" + res_type.name + "' type");
+
+    if (decorated_initializer) {
+        if (decorated_initializer->type.kind != type->kind)
+            return log_error(decorated_initializer->location, "initializer type mismatch");
+
+        decorated_initializer->set_value(cee.evaluate(*decorated_initializer, false));
+    }
+
+    return std::make_unique<DecoratedVarDecl>(var_decl.location, var_decl.identifier,
+                                              *type, var_decl.is_mutable,
+                                              std::move(decorated_initializer));
+}
+
+std::unique_ptr<DecoratedDeclStmt>
+Semantic::decorate_decl_stmt(const DeclStmt &decl_stmt) {
+    store_result(decorated_var_decl, decorate_var_decl(*decl_stmt.var_decl));
+
+    if (!insert_to_current_scope(*decorated_var_decl))
+        return nullptr;
+
+    return std::make_unique<DecoratedDeclStmt>(decl_stmt.location, 
+                                               std::move(decorated_var_decl));
 }
 
 std::unique_ptr<DecoratedStmt> Semantic::decorate_stmt(const Stmt &stmt) {
@@ -225,9 +397,43 @@ std::unique_ptr<DecoratedStmt> Semantic::decorate_stmt(const Stmt &stmt) {
     if (auto *return_stmt = dynamic_cast<const ReturnStmt *>(&stmt))
         return decorate_return_stmt(*return_stmt);
 
+    if (auto *if_stmt = dynamic_cast<const IfStmt *>(&stmt))
+        return decorate_if_stmt(*if_stmt);
+
+    if (auto *while_stmt = dynamic_cast<const WhileStmt *>(&stmt))
+        return decorate_while_stmt(*while_stmt);
+
+    if (auto *decl_stmt = dynamic_cast<const DeclStmt *>(&stmt))
+        return decorate_decl_stmt(*decl_stmt);
+
+    if (auto *assignment = dynamic_cast<const Assignment *>(&stmt))
+        return decorate_assignment(*assignment);
+
     // If statement doesn't match any of those, this should be unreachable
     assert(false && "unexpected statement");
     return nullptr;
+}
+
+std::unique_ptr<DecoratedIfStmt> Semantic::decorate_if_stmt(const IfStmt &if_stmt) {
+    store_result(condition, decorate_expr(*if_stmt.condition));
+
+    if (condition->type.kind != Type::Kind::Number)
+        return log_error(condition->location, "expected number in condition");
+
+    store_result(true_block, decorate_block(*if_stmt.true_block));
+
+    std::unique_ptr<DecoratedBlock> false_block;
+    if (if_stmt.false_block) {
+        false_block = decorate_block(*if_stmt.false_block);
+        if (!false_block)
+            return nullptr;
+    }
+
+    condition->set_value(cee.evaluate(*condition, false));
+
+    return std::make_unique<DecoratedIfStmt>(if_stmt.location, std::move(condition),
+                                             std::move(true_block),
+                                             std::move(false_block));
 }
 
 std::unique_ptr<DecoratedBlock> Semantic::decorate_block(const Block &block) {
@@ -235,6 +441,8 @@ std::unique_ptr<DecoratedBlock> Semantic::decorate_block(const Block &block) {
 
     bool had_error = false;
     int unreachable_count = 0;
+
+    Scope block_scope(this);
     for (auto &&stmt : block.statements) {
         auto decorated_stmt = decorate_stmt(*stmt);
 
@@ -258,8 +466,61 @@ std::unique_ptr<DecoratedBlock> Semantic::decorate_block(const Block &block) {
     return std::make_unique<DecoratedBlock>(block.location, std::move(decorated_statements));
 }
 
+bool Semantic::check_return_on_all_paths(const DecoratedFunctionDecl &fn,
+                                         const CFG &cfg) {
+    if (fn.type.kind == Type::Kind::Void)
+        return false;
+
+    std::set<int> visited;
+
+    std::vector<int> paths;
+    paths.emplace_back(cfg.entry);
+
+    int return_count = 0;
+    bool exit_reached = false;
+    while (!paths.empty()) {
+        int block = paths.back();
+        paths.pop_back();
+
+        if (!visited.emplace(block).second)
+            continue;
+
+        exit_reached |= block == cfg.exit;
+
+        const auto &[preds, succs, stmts] = cfg.basic_blocks[block];
+
+        if (!stmts.empty() && dynamic_cast<const DecoratedReturnStmt *>(stmts[0])) {
+            return_count++;
+            continue;
+        }
+
+        for (auto &&[succ, reachable] : succs)
+        if (reachable)
+            paths.emplace_back(succ);
+    }
+
+    if (exit_reached || return_count == 0) {
+        log_error(fn.location,
+                  return_count > 0
+                  ? "non-void function does not return a value on all paths"
+                  : "non-void function does not return a value");
+    }
+
+    return exit_reached || return_count == 0;
+}
+
+bool Semantic::run_flow_checks(const DecoratedFunctionDecl &fn) {
+    CFG cfg = CFGBuilder().build(fn);
+
+    bool error = false;
+    error |= check_return_on_all_paths(fn, cfg);
+    error |= check_variable_initialization(fn, cfg);
+
+    return error;
+}
+
 std::vector<std::unique_ptr<DecoratedFunctionDecl>> Semantic::decorate_ast() {
-    Scope global{this};
+    Scope global(this);
     std::vector<std::unique_ptr<DecoratedFunctionDecl>> dast;
 
     // Insert the builtin functions to the global scope and the Decorated AST
@@ -269,12 +530,12 @@ std::vector<std::unique_ptr<DecoratedFunctionDecl>> Semantic::decorate_ast() {
     for (auto &&fn : ast) {
         auto decorated_function_decl = decorate_function_decl(*fn);
 
-        if (!decorated_function_decl || 
+        if (!decorated_function_decl ||
             !insert_to_current_scope(*decorated_function_decl)) {
             had_error = true;
             continue;
         }
-        
+
         dast.emplace_back(std::move(decorated_function_decl));
     }
 
@@ -283,7 +544,7 @@ std::vector<std::unique_ptr<DecoratedFunctionDecl>> Semantic::decorate_ast() {
     // Decorate every function in the resolved tree besides the builtin functions
     for (size_t i = 1; i < dast.size(); i++) {
         Scope param(this);
-        current_function = dast[i].get();    
+        current_function = dast[i].get();
 
         for (auto &&param : current_function->params)
             insert_to_current_scope(*param);
@@ -295,6 +556,7 @@ std::vector<std::unique_ptr<DecoratedFunctionDecl>> Semantic::decorate_ast() {
         }
 
         current_function->body = std::move(decorated_body);
+        had_error |= run_flow_checks(*current_function); 
     }
 
     if (had_error) return {};
@@ -310,8 +572,8 @@ std::unique_ptr<DecoratedFunctionDecl> Semantic::create_builtin_display() {
     params.emplace_back(std::move(param));
 
     auto body = std::make_unique<DecoratedBlock>(
-						location, std::vector<std::unique_ptr<DecoratedStmt>>());
+        location, std::vector<std::unique_ptr<DecoratedStmt>>());
 
     return std::make_unique<DecoratedFunctionDecl>(
-            location, "display", Type::Void(), std::move(params), std::move(body));
+        location, "display", Type::Void(), std::move(params), std::move(body));
 }

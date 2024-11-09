@@ -1,5 +1,3 @@
-#include <iostream>
-
 #include "../include/lexer.h"
 
 static bool is_space(char c) {
@@ -38,7 +36,10 @@ Token Lexer::get_next_token() {
         return get_next_token();
     }
 
-    if (current == '=' && peek() == '=') {
+    if (current == '=') {
+        if (peek() != '=')
+            return Token{location, TokenKind::Equal};
+
         advance();
         return Token{location, TokenKind::EqualEqual};
     }
