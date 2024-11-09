@@ -1,0 +1,17 @@
+fn main(): void {
+    let a = 0;
+    let b = 1;
+
+    let i = 2;
+
+    display(a);
+    display(b);
+    while i < 20 {
+        const temp = a;
+        a = b;
+        b = temp + b;
+        display(b);
+        
+        i = i + 1;
+    }
+}
