@@ -8,3 +8,30 @@
 
 # Features
 
+## Static Types
+
+```
+fn main(): void  {
+  let x: number = 123;
+}
+```
+
+## Type inference
+
+```
+fn main(): void {
+  let inferred = 1;
+}
+```
+
+## Immutability
+```
+fn main(): void {
+  const immutable = 3;
+
+  immutable = 4;
+}
+```
+```
+main.nip:4:7: error: 'immutable' cannot be mutated
+```
